@@ -1,7 +1,7 @@
 # Title: Breath-Heart Synchronisation: A dataset for the analysis of Respiratory Sinus Arrythmia
 # Subtitle: Shiny App
 # Author: Tony Estrella
-# Sep 2025
+# Sep 2025 - June 2026
 
 library(shiny)
 library(shinydashboard)
@@ -10,9 +10,29 @@ library(pracma)
 library(tidyverse)
 
 # Data
-df_rr <- read_csv("data/RR_long_format.csv")
-df_respira <- read_delim("data/resp_hrvb.txt",
+url_rr <- "https://zenodo.org/records/19115193/files/RR_long_format.csv?download=1"
+file_rr <- "RR_long_format.csv"
+
+
+url_respira <- "https://zenodo.org/records/19115193/files/resp_hrvb.txt?download=1"
+file_resp <- "resp_hrvb.txt"
+
+
+
+if (!file.exists(file_rr)) {
+  download.file(url_rr, destfile = file_rr, mode = "wb")
+}
+if (!file.exists(file_resp)) {
+  download.file(url_respira, destfile = file_resp, mode = "wb")
+}
+
+
+df_rr <- read_csv(file_rr)
+df_rr <- df_rr[,-1]
+
+df_respira <- read_delim(file_resp,
                          delim = "\t")
+
 
 ui <- dashboardPage(
   dashboardHeader(title = "RSA Visualisation"),
