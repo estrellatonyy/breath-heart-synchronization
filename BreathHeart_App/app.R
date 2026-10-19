@@ -1,7 +1,7 @@
 # Title: Breath-Heart Synchronisation: A dataset for the analysis of Respiratory Sinus Arrythmia
 # Subtitle: Shiny App
 # Author: Tony Estrella
-# Sep 2025 - June 2026
+# Sep 2025 - June 2026 - Oct 2026
 
 library(shiny)
 library(shinydashboard)
@@ -10,30 +10,21 @@ library(pracma)
 library(tidyverse)
 
 # Data
-url_rr <- "https://zenodo.org/records/19115193/files/RR_long_format.csv?download=1"
+url_rr <- "https://zenodo.org/records/23257004/files/RR_long_format.csv?download=1"
 file_rr <- "RR_long_format.csv"
 
 
-url_respira <- "https://zenodo.org/records/19115193/files/resp_hrvb.txt?download=1"
+url_respira <- "https://zenodo.org/records/23257004/files/resp_hrvb.txt?download=1"
 file_resp <- "resp_hrvb.txt"
 
-
-
-if (!file.exists(file_rr)) {
-  download.file(url_rr, destfile = file_rr, mode = "wb")
-}
-if (!file.exists(file_resp)) {
-  download.file(url_respira, destfile = file_resp, mode = "wb")
-}
+download.file(url_rr, destfile = file_rr, mode = "wb")
+download.file(url_respira, destfile = file_resp, mode = "wb")
 
 
 df_rr <- read_csv(file_rr)
-df_rr <- df_rr[,-1]
+df_respira <- read_delim(file_resp)
 
-df_respira <- read_delim(file_resp,
-                         delim = "\t")
-
-
+# Shiny Web App
 ui <- dashboardPage(
   dashboardHeader(title = "RSA Visualisation"),
   
@@ -78,11 +69,11 @@ ui <- dashboardPage(
               fluidRow(
                 column(6, selectInput("Id",
                                       label = "Participant:",
-                                      choices = unique(df_rr$Participante)),
+                                      choices = unique(df_rr$participant_id)),
                        align = "center"),
                 column(6, selectInput("Sesion",
                                       label = "Session:",
-                                      choices = unique(df_rr$Sesion)),
+                                      choices = unique(df_rr$session_id)),
                        align = "center")
               ),
               fluidRow(
@@ -99,15 +90,15 @@ ui <- dashboardPage(
               fluidRow(
                 column(4, selectInput("Id2",
                                       label = "Participant:",
-                                      choices = unique(df_rr$Participante)),
+                                      choices = unique(df_rr$participant_id)),
                        align = "center"),
                 column(4, selectInput("Sesion2",
                                       label = "Session:",
-                                      choices = unique(df_rr$Sesion)),
+                                      choices = unique(df_rr$session_id)),
                        align = "center"),
                 column(4, selectInput("respiration2",
                                       label = "Breathing Frequency:",
-                                      choices = unique(df_rr$resp)),
+                                      choices = unique(df_rr$protocol_step)),
                        align = "center")
               ),
               fluidRow(
@@ -117,9 +108,11 @@ ui <- dashboardPage(
               ),
               fluidRow(
                 column(12, 
-                       h4(textOutput("selec")),
-                       style = "margin-top: 15px;
-                       margin-bottom: 15px;
+                       h4(textOutput("p2v_text"),
+                          h4(textOutput("selec")),
+                          style = "color: #34495e; font-weight: bold;"),
+                       style = "margin-top: 12px;
+                       margin-bottom: 12px;
                        color: #34495e; text-align: center;")
               ),
               fluidRow(
@@ -133,11 +126,11 @@ ui <- dashboardPage(
               fluidRow(
                 column(6, selectInput("Id3",
                                       label = "Participant:",
-                                      choices = unique(df_rr$Participante)),
+                                      choices = unique(df_rr$participant_id)),
                        align = "center"),
                 column(6, selectInput("Sesion3",
                                       label = "Session:",
-                                      choices = unique(df_rr$Sesion)),
+                                      choices = unique(df_rr$session_id)),
                        align = "center")
               ),
               fluidRow(
@@ -155,11 +148,11 @@ server <- function(input, output) {
   
   # Filter 1 - Participant and Session
   filtro <- reactive({df_rr %>% 
-      filter(Participante == input$Id,
-             Sesion == input$Sesion)})
+      filter(participant_id == input$Id,
+             session_id == input$Sesion)})
   filtro_resp <- reactive({df_respira %>% 
-      filter(Participante == input$Id,
-             Sesion == input$Sesion)})
+      filter(participant_id == input$Id,
+             session_id == input$Sesion)})
   
   # Output P1.1: Breathing frequencies and RR intervals ----
   
@@ -170,7 +163,7 @@ server <- function(input, output) {
   ## Continuous Plot ----
   output$contRSA <- renderPlotly({
     filtro() %>% 
-      plot_ly(x= ~timestamp, y = ~ rr) %>% 
+      plot_ly(x= ~timestamps, y = ~ rr) %>% 
       add_lines() %>% 
       layout(title = paste("
                            Plot for the participant", 
@@ -249,12 +242,12 @@ server <- function(input, output) {
   # Output P1.2: Breathing frequencies and respiration ----
   
   ### Y-axis bands based on min and max RR intervals
-  y_0 <- reactive({min(filtro_resp()$val_resp)})
-  y_1 <-reactive({max(filtro_resp()$val_resp)})
+  y_0 <- reactive({min(filtro_resp()$resp_amplitude)})
+  y_1 <-reactive({max(filtro_resp()$resp_amplitude)})
   
   output$resp_cont <- renderPlotly({
     filtro_resp() %>% 
-      plot_ly(x= ~timestamp, y = ~ val_resp) %>% 
+      plot_ly(x= ~timestamps, y = ~ resp_amplitude) %>% 
       add_lines() %>% 
       layout(title = "",
              xaxis = list(title = "Time",
@@ -330,9 +323,9 @@ server <- function(input, output) {
   # Output P2: Peak Detection ----
   filtro_peak <- reactive({
     df_rr %>% 
-      filter(Participante == input$Id2,
-             Sesion == input$Sesion2,
-             resp == input$respiration2,
+      filter(participant_id == input$Id2,
+             session_id == input$Sesion2,
+             protocol_step == input$respiration2,
              output == 1)
   })
   
@@ -381,6 +374,50 @@ server <- function(input, output) {
     paste0("Breathing Frequency: ", resp_min, " (Expected peak at ", resp_hz, " Hz)")
   })
   
+  ## Peak-to-Valley (P2V) Method ---- 
+  output$p2v_text <- renderText({
+    
+    # 1. Obtener ambas señales
+    observado <- filtro_peak()$rr
+    suavizado <- rr_suavizado()
+    
+    # 2. Función auxiliar para calcular P2V de cualquier señal
+    calc_p2v <- function(signal_data) {
+      picos <- findpeaks(signal_data)
+      
+      # Control de errores si hay demasiados artefactos o no hay picos
+      if (is.null(picos) || nrow(picos) < 2) {
+        return(NA)
+      }
+      
+      diferencias <- c()
+      for(i in 1:(nrow(picos) - 1)){
+        idx_pico_actual <- picos[i, 2]
+        idx_pico_siguiente <- picos[i+1, 2]
+        
+        valor_pico <- picos[i, 1]
+        valor_valle <- min(signal_data[idx_pico_actual:idx_pico_siguiente])
+        
+        diferencias <- c(diferencias, valor_pico - valor_valle)
+      }
+      
+      return(round(mean(diferencias), 2))
+    }
+    
+    # 3. Aplicar el cálculo a ambas señales
+    p2v_obs <- calc_p2v(observado)
+    p2v_filt <- calc_p2v(suavizado)
+    
+    # 4. Formatear el texto para lidiar con posibles NAs en caso de señales muy ruidosas
+    str_obs <- ifelse(is.na(p2v_obs), "N/A", paste0(p2v_obs, " ms"))
+    str_filt <- ifelse(is.na(p2v_filt), "N/A", paste0(p2v_filt, " ms"))
+    
+    # 5. Generar el texto final
+    paste0("Peak-to-Valley method: Observed: ", str_obs, "  |  Filtered: ", str_filt)
+  })
+  
+  
+  
   ## Spectral Plot ----
   rr <- reactive({filtro_peak()$rr})
   fs <- 4
@@ -427,8 +464,8 @@ server <- function(input, output) {
   # Output P3: Poincare Plots ----
   filtro_pp12 <- reactive({
     df_rr %>% 
-      filter(Participante == input$Id3,
-             Sesion == input$Sesion3)
+      filter(participant_id == input$Id3,
+             session_id == input$Sesion3)
   })
   
   data_pp1 <- reactive({filtro_pp12() %>%
