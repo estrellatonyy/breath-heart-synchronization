@@ -102,7 +102,8 @@ ui <- dashboardPage(
                        align = "center")
               ),
               fluidRow(
-                column(8, plotOutput("peakdetec")),
+                column(8, plotlyOutput("peakdetec",
+                                       height = "400px")),
                 column(4, DT::dataTableOutput("peaksum",
                                               height = "400px"))
               ),
@@ -321,7 +322,53 @@ server <- function(input, output) {
   })
   
   # Output P2: Peak Detection ----
+
+  # findpeaks MATLAB
+  detect_peaks_matlab <- function(y, min_dist = 6, min_h = 5) {
+    n <- length(y)
+    if (n < 3) return(integer(0))
+    
+    peaks <- which(diff(sign(diff(y))) == -2) + 1
+    
+    peaks <- peaks[y[peaks] >= min_h]
+    if (length(peaks) <= 1) return(peaks)
+    
+    ord <- order(y[peaks], decreasing = TRUE)
+    keep <- rep(TRUE, length(peaks))
+    
+    for (i in seq_along(ord)) {
+      curr <- ord[i]
+      if (!keep[curr]) next
+      too_close <- which(abs(peaks - peaks[curr]) < min_dist & seq_along(peaks) != curr)
+      keep[too_close] <- FALSE
+    }
+    
+    sort(peaks[keep])
+  }
+  
+  # peak2valley.m
+  peak2valley_matlab <- function(y, locs) {
+    if (is.null(locs) || length(locs) < 2) {
+      return(list(peak2peak = numeric(0), locsmin = integer(0)))
+    }
+    
+    locsmin <- integer(0)
+    peak2peak <- numeric(0)
+    
+    for (k in 1:(length(locs) - 1)) {
+      sub_y <- y[locs[k]:locs[k + 1]]
+      pmi <- which.min(sub_y)
+      mi <- sub_y[pmi]
+      
+      locsmin <- c(locsmin, pmi + locs[k] - 1)
+      peak2peak <- c(peak2peak, y[locs[k]] - mi)
+    }
+    
+    list(peak2peak = peak2peak, locsmin = locsmin)
+  }
+  
   filtro_peak <- reactive({
+    req(input$Id2, input$Sesion2, input$respiration2)
     df_rr %>% 
       filter(participant_id == input$Id2,
              session_id == input$Sesion2,
@@ -329,28 +376,71 @@ server <- function(input, output) {
              output == 1)
   })
   
-  butter<- signal::butter(1, 0.35, type = "low")
-  rr_suavizado <- reactive({signal::filtfilt(butter, filtro_peak()$rr)})
+  # Butterworth
+  butter_model <- signal::butter(1, 0.35, type = "low")
   
-  ## Plot ----
-  output$peakdetec <- renderPlot({
-    plot(filtro_peak()$rr, type = "l", col= "gray", 
-         ylab = "RR intervals",
-         xlab = "Time (s)")
-    lines(rr_suavizado(), col = "red")
-    legend("topleft", c("Observed", "Butterworth"), col = c("gray", "red"),
-           lty = 1)
-    title("Observed vs. Butterworth filter")
-  }, res = 96)
+  rr_suavizado <- reactive({
+    req(filtro_peak()$rr)
+    signal::filtfilt(butter_model, filtro_peak()$rr)
+  })
   
-  ## Table ----
-  output$peaksum <- DT::renderDataTable({
+  # Plotly signals
+  output$peakdetec <- plotly::renderPlotly({
+    req(filtro_peak()$rr)
     
-    tab <- findpeaks(rr_suavizado())
-    data.frame(N_peaks = seq(1, nrow(tab)),
-               Peak_RR = tab[,1],
-               begins = tab[,3],
-               ends = tab[,4])
+    y_raw  <- filtro_peak()$rr
+    y_filt <- rr_suavizado()
+    x_seq  <- seq_along(y_raw)
+    
+    plotly::plot_ly() %>%
+      plotly::add_lines(
+        x = x_seq,
+        y = y_raw,
+        name = "Observed",
+        line = list(color = "#7f8c8d", width = 1.2),
+        hoverinfo = "text",
+        text = paste0("Sample: ", x_seq, "<br>Observed RR: ", round(y_raw, 2), " ms")
+      ) %>%
+      plotly::add_lines(
+        x = x_seq,
+        y = y_filt,
+        name = "Butterworth",
+        line = list(color = "#e74c3c", width = 2),
+        hoverinfo = "text",
+        text = paste0("Sample: ", x_seq, "<br>Filtered RR: ", round(y_filt, 2), " ms")
+      ) %>%
+      plotly::layout(
+        title = list(text = "Observed vs. Butterworth Filter", font = list(size = 14)),
+        xaxis = list(title = "Samples", showgrid = TRUE),
+        yaxis = list(title = "RR intervals (ms)", showgrid = TRUE),
+        hovermode = "x unified",
+        legend = list(orientation = "h", x = 0.05, y = 1.1)
+      )
+  })
+  
+  # Table
+  output$peaksum <- DT::renderDataTable({
+    req(filtro_peak()$rr)
+    
+    y_signal <- filtro_peak()$rr
+    locs <- detect_peaks_matlab(y_signal, min_dist = 6, min_h = 5)
+    
+    if (length(locs) == 0) {
+      return(data.frame(Mensaje = "No se detectaron picos"))
+    }
+   
+    res_p2v <- peak2valley_matlab(y_signal, locs)
+    
+    valleys_aligned <- c(res_p2v$locsmin, NA)
+    p2v_aligned <- c(round(res_p2v$peak2peak, 2), NA)
+    
+    data.frame(
+      N_peaks     = seq_along(locs),
+      Peak_Sample = locs,
+      Peak_RR     = round(y_signal[locs], 2),
+      Next_Valley = valleys_aligned,
+      P2V_Amp     = p2v_aligned
+    )
   },
   rownames = FALSE,
   options = list(
@@ -359,60 +449,115 @@ server <- function(input, output) {
     paging = FALSE,
     searching = TRUE)
   )
+  
+  # Text Peak-to-Valley Method
+  output$p2v_text <- renderText({
+    req(filtro_peak()$rr)
+    
+    observado <- filtro_peak()$rr
+    suavizado <- rr_suavizado()
+    
+    calc_p2v <- function(signal_data) {
+      locs <- detect_peaks_matlab(signal_data, min_dist = 6, min_h = 5)
+      res <- peak2valley_matlab(signal_data, locs)
+      
+      if (length(res$peak2peak) == 0) return(NA)
+      round(mean(res$peak2peak), 2)
+    }
+    
+    p2v_obs  <- calc_p2v(observado)
+    p2v_filt <- calc_p2v(suavizado)
+    
+    str_obs  <- ifelse(is.na(p2v_obs), "N/A", paste0(p2v_obs, " ms"))
+    str_filt <- ifelse(is.na(p2v_filt), "N/A", paste0(p2v_filt, " ms"))
+    
+    paste0("Peak-to-Valley method: Observed: ", str_obs, "  |  Filtered: ", str_filt)
+  })
+  
+  # Selec respiration
+  output$selec <- renderText({
+    req(input$respiration2)
+    resp_min <- as.numeric(input$respiration2)
+    resp_hz <- round(resp_min / 60, 3)
+    paste0("Breathing Frequency: ", resp_min, " (Expected peak at ", resp_hz, " Hz)")
+  })
+  
+  
   ## BF selection Hz ---- 
   output$selec <- renderText({
-    # Nos aseguramos de que haya un valor seleccionado
     req(input$respiration2)
     
-    # Convertimos a numérico por si acaso el input viene como string
     resp_min <- as.numeric(input$respiration2)
     
-    # Cálculo: Respiraciones por segundo (Hz)
-    # Hz = Respiraciones por minuto / 60
     resp_hz <- round(resp_min / 60, 3)
     
     paste0("Breathing Frequency: ", resp_min, " (Expected peak at ", resp_hz, " Hz)")
   })
   
   ## Peak-to-Valley (P2V) Method ---- 
-  output$p2v_text <- renderText({
+  peak2valley_r <- function(y, locs) {
+    if (is.null(locs) || length(locs) < 2) {
+      return(list(peak2peak = numeric(0), locsmin = integer(0)))
+    }
     
-    # 1. Obtener ambas señales
+    locsmin <- integer(0)
+    peak2peak <- numeric(0)
+    
+    for (k in 1:(length(locs) - 1)) {
+      # Ventana entre el pico k y el pico k+1
+      sub_y <- y[locs[k]:locs[k + 1]]
+      pmi <- which.min(sub_y)
+      mi <- sub_y[pmi]
+      
+      # Índice global del valle: pmi + locs(k) - 1
+      locsmin <- c(locsmin, pmi + locs[k] - 1)
+      # Amplitud pico a valle: y(locs(k)) - mi
+      peak2peak <- c(peak2peak, y[locs[k]] - mi)
+    }
+    
+    list(peak2peak = peak2peak, locsmin = locsmin)
+  }
+  
+  
+  
+  ## Peak-to-Valley (P2V) TEXT ----
+  output$p2v_text <- renderText({
+    req(filtro_peak()$rr)
+    
     observado <- filtro_peak()$rr
     suavizado <- rr_suavizado()
     
-    # 2. Función auxiliar para calcular P2V de cualquier señal
     calc_p2v <- function(signal_data) {
-      picos <- findpeaks(signal_data)
+      h_min <- mean(signal_data, na.rm = TRUE)
       
-      # Control de errores si hay demasiados artefactos o no hay picos
+
+      picos <- pracma::findpeaks(
+        signal_data,
+        minpeakdistance = 7,         
+        minpeakheight   = h_min,     
+        threshold       = 10         
+      )
+      
       if (is.null(picos) || nrow(picos) < 2) {
         return(NA)
       }
       
-      diferencias <- c()
-      for(i in 1:(nrow(picos) - 1)){
-        idx_pico_actual <- picos[i, 2]
-        idx_pico_siguiente <- picos[i+1, 2]
-        
-        valor_pico <- picos[i, 1]
-        valor_valle <- min(signal_data[idx_pico_actual:idx_pico_siguiente])
-        
-        diferencias <- c(diferencias, valor_pico - valor_valle)
-      }
+      # index
+      locs <- picos[, 2]
       
-      return(round(mean(diferencias), 2))
+      # Peak-to-Valley MATLAB
+      res <- peak2valley_r(signal_data, locs)
+      
+      if (length(res$peak2peak) == 0) return(NA)
+      round(mean(res$peak2peak), 2)
     }
     
-    # 3. Aplicar el cálculo a ambas señales
-    p2v_obs <- calc_p2v(observado)
+    p2v_obs  <- calc_p2v(observado)
     p2v_filt <- calc_p2v(suavizado)
     
-    # 4. Formatear el texto para lidiar con posibles NAs en caso de señales muy ruidosas
-    str_obs <- ifelse(is.na(p2v_obs), "N/A", paste0(p2v_obs, " ms"))
+    str_obs  <- ifelse(is.na(p2v_obs), "N/A", paste0(p2v_obs, " ms"))
     str_filt <- ifelse(is.na(p2v_filt), "N/A", paste0(p2v_filt, " ms"))
     
-    # 5. Generar el texto final
     paste0("Peak-to-Valley method: Observed: ", str_obs, "  |  Filtered: ", str_filt)
   })
   
